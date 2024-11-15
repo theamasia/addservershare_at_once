@@ -1,0 +1,78 @@
+# Function to get available shares on a server
+function Get-AvailableShares {
+    param (
+        [string]$ComputerName,
+        [System.Management.Automation.PSCredential]$Credential
+    )
+
+    try {
+        $shares = Get-WmiObject -Class Win32_Share -ComputerName $ComputerName -Credential $Credential -ErrorAction Stop |
+                  Where-Object { $_.Name -notmatch '^\w\$$' -and $_.Name -ne 'IPC$' }
+        return $shares
+    }
+    catch {
+        Write-Host "Error retrieving shares: $_" -ForegroundColor Red
+        return $null
+    }
+}
+
+# Function to map network drive
+function Map-NetworkDrive {
+    param (
+        [string]$SharePath,
+        [string]$DriveLetter,
+        [System.Management.Automation.PSCredential]$Credential
+    )
+
+    try {
+        New-PSDrive -Name $DriveLetter -PSProvider FileSystem -Root $SharePath -Persist -Credential $Credential -ErrorAction Stop
+        Write-Host "Successfully mapped $SharePath to $($DriveLetter):\" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "Error mapping drive ${SharePath}: $_" -ForegroundColor Red
+    }
+}
+
+# Main script
+$serverAddress = Read-Host "Enter the IP address or FQDN of the server"
+$credential = Get-Credential -Message "Enter credentials for $serverAddress"
+
+$shares = Get-AvailableShares -ComputerName $serverAddress -Credential $credential
+
+if ($shares) {
+    Write-Host "Available shares on ${serverAddress}:"
+
+    $shareList = @()
+    for ($i = 0; $i -lt $shares.Count; $i++) {
+        Write-Host "[$i] $($shares[$i].Name) - $($shares[$i].Description)"
+        $shareList += $shares[$i].Name
+    }
+
+    $selectedIndices = Read-Host "Enter the numbers of the shares you want to map (comma-separated)"
+    $selectedIndices = $selectedIndices.Split(',') | ForEach-Object { $_.Trim() }
+
+    $availableDrives = 67..90 | ForEach-Object { [char]$_ } | Where-Object { (Get-PSDrive -Name $_ -ErrorAction SilentlyContinue) -eq $null }
+
+    foreach ($index in $selectedIndices) {
+        if ($index -match '^\d+$' -and [int]$index -ge 0 -and [int]$index -lt $shareList.Count) {
+            $shareName = $shareList[[int]$index]
+            $sharePath = "\\$serverAddress\$shareName"
+            
+            if ($availableDrives.Count -gt 0) {
+                $driveLetter = $availableDrives[0]
+                $availableDrives = $availableDrives[1..($availableDrives.Count-1)]
+                
+                Map-NetworkDrive -SharePath $sharePath -DriveLetter $driveLetter -Credential $credential
+            }
+            else {
+                Write-Host "No more drive letters available to map $sharePath" -ForegroundColor Yellow
+            }
+        }
+        else {
+            Write-Host "Invalid selection: $index" -ForegroundColor Yellow
+        }
+    }
+}
+else {
+    Write-Host "No shares found or unable to retrieve shares from $serverAddress" -ForegroundColor Yellow
+}
